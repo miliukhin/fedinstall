@@ -1,0 +1,214 @@
+#!/bin/sh
+
+# fedinstall - Arch/Artix install script with Full Disk Encryption and no feds!
+# by Oleksandr Miliukhin <oleksandr@miliukhin.xyz>
+# License: GNU GPLv3
+
+# Proper usage checks.
+[ -z "$1" ] && echo "Usage:
+$0 dev/sdX passw0rd-for_lukssystem" && exit
+if [ -n "$(ls /sys/firmware/efi/efivars)" ] ; then
+	echo "Installing for an EFI system - drive will not be 100% encrypted!"
+	efisys="yes"
+else
+	echo "Installing for a Legacy Boot system. Drive will be fully encrypted."
+fi
+[ $(id -u) != 0 ] && echo "Root privileges required." && exit
+
+# Parameters.
+targetdisk='$1'
+[ -z "$targetdisk" ] && echo "No target disk specified." && exit
+cryptpass='$2'
+[ -z "$cryptpass" ] && echo "No encryption password provided." && exit
+# uselvm="True" # comment out if you don't want lvm
+cryptname="crypt"
+cvg="${cryptname}_lvm"
+hostname="logos"
+locale='LANG="en_US.UTF-8"
+LC_COLLATE="C"
+LC_MEASUREMENT="uk_UA.UTF-8"'
+langs='en_US.UTF-8 UTF-8
+en_US ISO-8859-1
+uk_UA.UTF-8 UTF-8
+uk_UA KOI8-U'
+timezone='Europe/Kyiv'
+rootpass='123'
+keyfile="luksroot.key"
+filesys="ext4"
+
+hello(){
+	echo "+-- Artix Installation Parameters --+"
+	echo "Target disk   : \"$targetdisk\""
+	#echo "Crypto pass   : \"$cryptpass\""
+	echo "Cryptvol group: \"$cvg\""
+	echo -n "Correct?" && read
+}
+
+# Partition the disk.
+formatdisk(){
+	if [ -n "${efisys+x}" ]; then
+		parted -s -a optimal $targetdisk mklabel gpt
+		parted -s -a optimal $targetdisk mkpart "BOOT" fat32 0% 512MiB
+		parted -s -a optimal $targetdisk set 1 esp on
+		parted -s -a optimal $targetdisk mkpart "CRYPT" ext4 512MiB 100%
+		rootpart="${targetdisk}2"
+	else
+		parted -s -a optimal $targetdisk mklabel msdos # msdos?
+		parted -s -a optimal $targetdisk mkpart primary ext4 0% 100%
+		rootpart="${targetdisk}1"
+	fi
+}
+
+makevolumes(){
+	# make filesystem on EFI partition if present
+	[ -z "${efisys+x}" ] || mkfs.fat -F32 ${targetdisk}1
+
+	# Set up LUKS encrypted container.
+	echo -ne "$cryptpass" | cryptsetup luksFormat ${rootpart} -d -
+	echo -ne "$cryptpass" | cryptsetup open ${rootpart} "$cryptname" -d -
+
+	if [ -n "${uselvm+x}" ]; then
+		# Create logical volumes.
+		pvcreate "/dev/mapper/$cryptname"
+		vgcreate $cvg "/dev/mapper/$cryptname"
+		lvcreate -L 50G $cvg -n root
+		lvcreate -l 100%FREE $cvg -n home
+
+		# Make filesystems.
+		mkfs."$filesys" -qF /dev/$cvg/root
+		mkfs."$filesys" -qF /dev/$cvg/home
+
+		# Mount filesystems.
+		mount /dev/$cvg/root /mnt
+		mkdir /mnt/boot
+		mkdir /mnt/home
+		mount /dev/$cvg/home /mnt/home
+
+		# workaround for EFI+LVM since it didn't work with encrypted boot
+		[ -z "${efisys+x}" ] || mount ${targetdisk}1 /mnt/boot
+	else
+		mkfs."$filesys" -qF "/dev/mapper/$cryptname"
+		mount "/dev/mapper/$cryptname" /mnt
+
+		# mount dir for EFI files
+		[ -z "${efisys+x}" ] || mount ${targetdisk}1 /mnt/efi --mkdir
+	fi
+}
+
+# Basestrap the system and install lvm hooks.
+installbase(){
+	basestrap /mnt linux linux-firmware \
+		runit elogind-runit \
+		base base-devel \
+		networkmanager networkmanager-runit \
+		vi vim \
+		cryptsetup cryptsetup-runit lvm2 \
+		mkinitcpio grub
+	fstabgen -U /mnt > /mnt/etc/fstab
+}
+
+# Make a keyfile for decrypting root again automatically
+cryptkey(){
+	dd bs=512 count=4 if=/dev/urandom of="/mnt/etc/$keyfile"
+	echo -ne "$cryptpass" | cryptsetup luksAddKey ${rootpart} "/mnt/etc/$keyfile" -d -
+	chmod 000 "/mnt/etc/$keyfile"
+	sed -s 's|^FILES=.*|FILES=(/etc/'$keyfile')|g' -i /mnt/etc/mkinitcpio.conf
+
+}
+
+# Install grub.
+installgrub(){
+	# Boot faster!
+	sed -s "s|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=1|g" -i /mnt/etc/default/grub
+
+	# Tell grub about cryptodrives
+	cryptuuid=$(blkid -s UUID -o value ${rootpart})
+	rootuuid=$(blkid -s UUID -o value /dev/mapper/${cryptname})
+	if [ -n "${uselvm+x}" ]; then
+		sed -s "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"cryptdevice=UUID=$cryptuuid:$cryptname cryptkey=rootfs:/etc/$keyfile loglevel=3 quiet\"|g" \
+			-i /mnt/etc/default/grub
+	else
+		sed -s "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"cryptdevice=UUID=$cryptuuid:$cryptname root=UUID=$rootuuid cryptkey=rootfs:/etc/$keyfile loglevel=3 quiet\"|g" \
+			-i /mnt/etc/default/grub
+	fi
+	sed -s 's/^#GRUB_ENABLE_CRYPTODISK=y/GRUB_ENABLE_CRYPTODISK=y/g' -i /mnt/etc/default/grub
+
+	# Add encrypt and lvm2 hooks to initramfs image generation
+	sed -s 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block encrypt keyboard keymap lvm2 filesystems fsck)/g' -i /mnt/etc/mkinitcpio.conf
+
+	# Finally, generate boot stuffs
+	artix-chroot /mnt sh -c 'mkinitcpio -p linux'
+
+	if [ -n "${efisys+x}" ]; then
+		artix-chroot /mnt sh -c 'pacman -S --noconfirm efibootmgr'
+		if [ -n "${uselvm+x}" ]; then
+			artix-chroot /mnt sh -c 'grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=grub'
+		else
+			artix-chroot /mnt sh -c 'grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=grub'
+		fi
+	else
+		artix-chroot /mnt sh -c 'grub-install '${targetdisk}''
+	fi
+	artix-chroot /mnt sh -c 'grub-mkconfig -o /boot/grub/grub.cfg'
+}
+
+config(){
+	# Set root password and sudoers.
+	artix-chroot /mnt sh -c "echo root:$rootpass | chpasswd"
+
+	# Set hosts and link NetworkManager.
+	echo "$hostname" > /mnt/etc/hostname
+	echo "127.0.0.1 localhost" >> /mnt/etc/hosts
+	echo "::1 localhost" >> /mnt/etc/hosts
+	echo "127.0.1.1 $hostname.localdomain $hostname" >> /mnt/etc/hosts
+	artix-chroot /mnt sh -c 'ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default'
+
+	# Set locale and default timezone.
+	echo "$locale" > /mnt/etc/locale.conf
+	echo "$langs" >> /mnt/etc/locale.gen
+	artix-chroot /mnt sh -c 'locale-gen'
+	artix-chroot /mnt sh -c 'ln -sf /usr/share/zoneinfo/'$timezone' /etc/localtime && hwclock -w'
+}
+
+# Perform cleanups.
+cleanup(){
+	umount -R /mnt
+	vgchange -a n
+	cryptsetup close "$cryptname"
+}
+
+goodbye(){
+	set +x
+	echo "Installation completed, you can log in with root password $rootpass"
+}
+
+hello
+
+# Check if cryptname is already used
+ls /dev/mapper/ | grep "^${cryptname}$" >/dev/null &&
+echo 'There seems to already exist a decrypted device with name '${cryptname}'. Proceed anyway? [y/N]' &&
+read -r answer &&
+if [ "$answer" != "${answer#[Yy]}" ] ;then
+    echo "Remounting drives and beginning install..."
+else
+    echo "Exiting..." && exit 1
+fi
+
+# Reset/init.
+parted -v 2>/dev/null || { echo 'parted not found. Installing...' && pacman -Sy --noconfirm parted ; }
+umount -R /mnt 2>/dev/null
+vgchange -a n 2>/dev/null
+cryptsetup close "$cryptname" 2>/dev/null
+cryptsetup close "$cryptname" 2>/dev/null
+killall -s 9 cryptsetup 2>/dev/null
+
+set -xe
+
+formatdisk
+makevolumes
+installbase
+cryptkey
+installgrub
+config
+cleanup
+goodbye
