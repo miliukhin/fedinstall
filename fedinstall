@@ -19,7 +19,11 @@ fi
 targetdisk="$1"
 [ -z "$targetdisk" ] && echo "No target disk specified." && exit
 cryptpass="$2"
-[ -z "$cryptpass" ] && echo "No encryption password provided." && exit
+[ -z "$cryptpass" ] && echo "No encryption password provided." &&
+while [ -z "$cryptpass" ] ; do
+	echo "Type password for decrypting your new system:"
+	read -sr cryptpass
+done && echo "Got password! Proceeding..."
 # uselvm="True" # comment out if you don't want lvm
 cryptname="crypt"
 cvg="${cryptname}_lvm"
