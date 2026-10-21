@@ -16,9 +16,9 @@ fi
 [ $(id -u) != 0 ] && echo "Root privileges required." && exit
 
 # Parameters.
-targetdisk='$1'
+targetdisk="$1"
 [ -z "$targetdisk" ] && echo "No target disk specified." && exit
-cryptpass='$2'
+cryptpass="$2"
 [ -z "$cryptpass" ] && echo "No encryption password provided." && exit
 # uselvm="True" # comment out if you don't want lvm
 cryptname="crypt"
