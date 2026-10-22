@@ -16,8 +16,6 @@ use.
 	* For legacy boot, the drive is 100% encrypted.
 	* For EFI systems a separate unencrypted partition for EFI files is
 	  created.
-	* **For EFI systems using LVM, boot partition is currently
-	  unencrypted!**
 * Perfect to run before LARBS!
 
 ## Usage

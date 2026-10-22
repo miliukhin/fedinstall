@@ -68,7 +68,7 @@ formatdisk(){
 		parted -s -a optimal $targetdisk mkpart "CRYPT" ext4 512MiB 100%
 		rootpart="${targetdisk}2"
 	else
-		parted -s -a optimal $targetdisk mklabel msdos # msdos?
+		parted -s -a optimal $targetdisk mklabel msdos
 		parted -s -a optimal $targetdisk mkpart primary ext4 0% 100%
 		rootpart="${targetdisk}1"
 	fi
@@ -98,16 +98,12 @@ makevolumes(){
 		mkdir /mnt/boot
 		mkdir /mnt/home
 		mount /dev/$cvg/home /mnt/home
-
-		# workaround for EFI+LVM since it didn't work with encrypted boot
-		[ -z "${efisys+x}" ] || mount ${targetdisk}1 /mnt/boot
 	else
 		mkfs."$filesys" -qF "/dev/mapper/$cryptname"
 		mount "/dev/mapper/$cryptname" /mnt
-
-		# mount dir for EFI files
-		[ -z "${efisys+x}" ] || mount ${targetdisk}1 /mnt/efi --mkdir
 	fi
+	# mount dir for EFI files
+	[ -z "${efisys+x}" ] || mount ${targetdisk}1 /mnt/efi --mkdir
 }
 
 # Basestrap the system and install lvm hooks.
@@ -156,11 +152,7 @@ installgrub(){
 
 	if [ -n "${efisys+x}" ]; then
 		artix-chroot /mnt sh -c 'pacman -S --noconfirm efibootmgr'
-		if [ -n "${uselvm+x}" ]; then
-			artix-chroot /mnt sh -c 'grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=grub'
-		else
-			artix-chroot /mnt sh -c 'grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=grub'
-		fi
+		artix-chroot /mnt sh -c 'grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=grub'
 	else
 		artix-chroot /mnt sh -c 'grub-install '${targetdisk}''
 	fi
