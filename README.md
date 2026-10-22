@@ -16,6 +16,8 @@ use.
 	* For legacy boot, the drive is 100% encrypted.
 	* For EFI systems a separate unencrypted partition for EFI files is
 	  created.
+* Keyfile is used so there's no need to enter the decryption password twice.
+* Speeds up boot by reducing grub timeout.
 * Perfect to run before LARBS!
 
 ## Usage
