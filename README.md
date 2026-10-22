@@ -24,6 +24,11 @@ use.
 You can run the script from live Artix ISO. You can also run it from an already
 installed system, if you install `artools-base` package.
 
+Download the script from github or from my website using curl:
+```
+curl -LO miliukhin.xyz/fedinstall
+```
+
 ### Basic usage:
 Just give the script a drive to install the system on and a password for it.
 **Be careful to not choose the wrong drive, as the script will erase it!**
