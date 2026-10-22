@@ -1,29 +1,11 @@
-#!/bin/sh
+#!/bin/bash
 
 # fedinstall - Arch/Artix install script with Full Disk Encryption and no feds!
 # by Oleksandr Miliukhin <oleksandr@miliukhin.xyz>
 # License: GNU GPLv3
 
-# Proper usage checks.
-[ -z "$1" ] && echo "Usage:
-$0 dev/sdX passw0rd-for_lukssystem" && exit
-if [ -n "$(ls /sys/firmware/efi/efivars)" ] ; then
-	echo "Installing for an EFI system - drive will not be 100% encrypted!"
-	efisys="yes"
-else
-	echo "Installing for a Legacy Boot system. Drive will be fully encrypted."
-fi
-[ $(id -u) != 0 ] && echo "Root privileges required." && exit
+## CONFIGURATION
 
-# Parameters.
-targetdisk="$1"
-[ -z "$targetdisk" ] && echo "No target disk specified." && exit
-cryptpass="$2"
-[ -z "$cryptpass" ] && echo "No encryption password provided." &&
-while [ -z "$cryptpass" ] ; do
-	echo "Type password for decrypting your new system:"
-	read -sr cryptpass
-done && echo "Got password! Proceeding..."
 # uselvm="True" # comment out if you don't want lvm
 cryptname="crypt"
 cvg="${cryptname}_lvm"
@@ -40,12 +22,41 @@ rootpass='123'
 keyfile="luksroot.key"
 filesys="ext4"
 
-hello(){
-	echo "+-- Artix Installation Parameters --+"
-	echo "Target disk   : \"$targetdisk\""
-	#echo "Crypto pass   : \"$cryptpass\""
-	echo "Cryptvol group: \"$cvg\""
-	echo -n "Correct?" && read
+## FUNCTIONS
+
+usage() {
+echo "Basic usage:
+$(basename "$0") -d </dev/path-to-drive> -p <password-for-decryption>
+
+Options:
+  -d  drive to install on (e.g. /dev/sdX, /dev/nvme...)
+  -f  file system for the root partition (ext4, btrfs etc)
+  -h  hostname
+  -l  set up LVM /root and /home logical volumes
+  -n  name for the encrypted system partition
+  -p  password for system decryption
+  -t  time zone (file in /usr/share/zoneinfo/, e.g. Europe/Kyiv)
+  -v  be verbose"
+}
+
+info(){
+	echo "
+Installing on:		$targetdisk
+Cryptname:		$cryptname
+Hostname: 		$hostname
+
+Locale:
+$locale
+
+Languages:
+$langs
+
+Timezone:		$timezone
+Filesystem:		$filesys
+"
+	[ -n "${uselvm+x}" ] && echo 'Separate /root and /home LVM volumes will be created.'
+	echo ""
+	echo -n "Press any key to continue." && read
 }
 
 # Partition the disk.
@@ -186,7 +197,44 @@ goodbye(){
 	echo "Installation completed, you can log in with root password $rootpass"
 }
 
-hello
+## THE SCRIPT ITSELF
+
+# Parse command-line arguments
+while getopts "lvn:d:f:h:p:t:" o; do case "${o}" in
+	d) targetdisk="$OPTARG" ;;
+	f) filesys="$OPTARG" ;;
+	h) hostname="$OPTARG" ;;
+	l) uselvm=True ;;
+	n) cryptname="$OPTARG" ;;
+	p) cryptpass="$OPTARG" ;;
+	t) timezone="$OPTARG" ;;
+	v) verbose=True ;;
+	*) usage && exit 1
+esac done
+
+# Proper usage checks.
+[ -z "$1" ] && usage && exit
+
+echo "Welcome to fedinstall!"
+
+if [ -n "$(ls /sys/firmware/efi/efivars)" ] ; then
+	echo "Installing for an EFI system - drive will not be 100% encrypted!"
+	efisys="yes"
+else
+	echo "Installing for a Legacy Boot system. Drive will be fully encrypted."
+fi
+[ $(id -u) != 0 ] && echo "Root privileges required." && exit
+[ -z "$targetdisk" ] && echo "No target disk specified." && exit
+[ -z "$cryptpass" ] && echo "No encryption password provided." &&
+stty_orig=$(stty -g) &&
+trap "stty ${stty_orig}" EXIT &&
+stty -echo &&
+while [ -z "$cryptpass" ] ; do
+	echo "Type password for decrypting your new system:"
+	read -r cryptpass
+done && echo "Got password! Proceeding..." && stty "$stty_orig"
+
+info
 
 # Check if cryptname is already used
 ls /dev/mapper/ | grep "^${cryptname}$" >/dev/null &&
@@ -206,7 +254,8 @@ cryptsetup close "$cryptname" 2>/dev/null
 cryptsetup close "$cryptname" 2>/dev/null
 killall -s 9 cryptsetup 2>/dev/null
 
-set -xe
+[ -n "${verbose+x}" ] && set -x
+set -e
 
 formatdisk
 makevolumes
